@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { cyberWorkingState as state } from "./editor-state.js";
-import { ensureCockpitDeferred } from "./maestro-guard.js";
+import { ensureCockpitDeferred, ensureCockpitPatched } from "./maestro-guard.js";
 import { registerCyberWorking } from "./working.js";
 
 function assistantMessage(event: unknown): any | undefined {
@@ -11,9 +11,11 @@ function assistantMessage(event: unknown): any | undefined {
 export default function cyberWorkingOnly(pi: ExtensionAPI): void {
   // Self-heal: keep pi-cockpit off the working message slot so cyber persists.
   ensureCockpitDeferred();
+  ensureCockpitPatched();
 
   pi.on("session_start", async () => {
     ensureCockpitDeferred();
+    ensureCockpitPatched();
     state.onSessionStart();
   });
 

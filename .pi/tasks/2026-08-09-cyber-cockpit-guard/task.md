@@ -27,3 +27,11 @@
 ## 结论
 
 补丁完成并已同步到加载位置。pi 下次启动（或 reload）后生效；即使 cockpit.json 被覆盖/删除，cyber 每次激活与 session_start 都会自愈。未 commit（用户未要求）。
+
+## 2026-08-09 补充：cockpit 0.13.0 移除配置项的复发修复
+
+- 用户从 GitHub 更新 maestro-flow 后问题复发：cockpit 0.11.0 → 0.13.0 时官方**移除了 `ambientWorkingMessage` 配置项**（types/config 全删），`refreshAmbient` 无条件 `setWorkingMessage(workingMessage(state, now))`，配置守卫失效。
+- 修复：`maestro-guard.ts` 新增 `ensureCockpitPatched()`——检测 `~/.pi/agent/npm/node_modules/pi-cockpit/src/`，若 `index.ts` 缺 `cyber-guard` 标记则注入 `if (config.ambientWorkingMessage) { ... }` 包裹无条件调用，并恢复 `types.ts`（接口字段 + 默认 true）与 `config.ts`（merge 支持）。幂等（GUARD_MARK），文件缺失/损坏/已 patch 跳过。
+- `index.ts` activate + session_start 同时调用 `ensureCockpitDeferred()` 与 `ensureCockpitPatched()`。
+- 验证：临时目录 pristine 0.13.0 源码 → 激活自愈 patch + 配置 false；幂等；语法检查通过；真实环境已 patch（index/types/config 三处）。
+- 注意：真实 cockpit 0.13.0 已打补丁（含配置 `ambientWorkingMessage: false`）；cyber 升级后即使 cockpit 再升级，激活时自动重新打补丁。
