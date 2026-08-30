@@ -37,10 +37,11 @@ export function ensureCockpitDeferred(): void {
 /**
  * Cockpit 0.12+ removed the ambientWorkingMessage config key (upstream), so the
  * config guard alone stops working after an upgrade. Re-inject the guard into
- * cockpit's source: wrap the unconditional setWorkingMessage call so the slot
- * stays free when cockpit.json sets ambientWorkingMessage false, and restore
- * the type/merge plumbing for that key. Idempotent via GUARD_MARK; skips
- * entirely when the file is absent or already patched.
+ * cockpit's source: wrap the ambient working-message write (legacy direct or
+ * newer AmbientSurface call) so the slot stays free when cockpit.json sets
+ * ambientWorkingMessage false, and restore the type/merge plumbing for that
+ * key. Idempotent via GUARD_MARK; skips entirely when the file is absent or
+ * already patched.
  */
 export function ensureCockpitPatched(): void {
   try {
@@ -50,8 +51,12 @@ export function ensureCockpitPatched(): void {
     let index = readFileSync(indexPath, "utf8");
     if (index.includes(GUARD_MARK)) return;
     const eol = index.includes("\r\n") ? "\r\n" : "\n";
-    const call = `ctx.ui.setWorkingMessage(workingMessage(state, now));`;
-    if (!index.includes(call)) return;
+    const calls = [
+      `ctx.ui.setWorkingMessage(workingMessage(state, now));`,
+      `ambientSurfaces.setWorkingMessage((message) => ctx.ui.setWorkingMessage(message), workingMessage(state, now));`,
+    ];
+    const call = calls.find((candidate) => index.includes(candidate));
+    if (!call) return;
     const guarded = `${tab(3)}if (config.ambientWorkingMessage) {${eol}${tab(4)}${call}${eol}${tab(3)}}`;
     // The original line's leading tabs stay before the replaced text, so the
     // mark line must not carry its own indentation.
