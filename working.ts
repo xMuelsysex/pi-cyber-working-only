@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { cyberWorkingState, type HudSnapshot } from "./editor-state.js";
 
-type Timer = ReturnType<typeof setInterval>;
+type Timer = ReturnType<typeof setTimeout>;
 type RGB = readonly [number, number, number];
 
 const C = {
@@ -19,7 +19,8 @@ const RESET_FG = "\x1b[39m";
 const BOLD = "\x1b[1m";
 const UNBOLD = "\x1b[22m";
 const ESC_HINT_AFTER_MS = 10_000;
-const MESSAGE_REFRESH_MS = 16;
+// One wall-clock loop renders the pulse and the HUD message together.
+const MESSAGE_REFRESH_MS = 33;
 const MESSAGE_BUDGET = 100;
 const VERB_ROTATE_MS = 8_000;
 const TURN_ICON = "\u{f0109}";
@@ -80,7 +81,7 @@ function visibleWidth(text: string): number {
 }
 
 // 32 frames @ 75ms = 2400ms cycle, ported from pi-cyber-ui's silver pulsar.
-const FRAME_INTERVAL_MS = 75;
+const PULSE_FRAME_INTERVAL_MS = 75;
 const PULSE_FRAME_TEXTS = Array.from({ length: 32 }, (_unused, i) => {
   const phase = i / 32;
   const intensity = 0.5 * (1 - Math.cos(Math.PI * 2 * phase));
@@ -92,11 +93,10 @@ const LETTER_WAVE_DELAY_MS = 120;
 const LETTER_WAVE_PEAK = 0.32;
 const LETTER_WAVE_HALF = 0.25;
 
-function paintLetterWave(text: string): string {
+function paintLetterWave(text: string, now: number): string {
   const chars = [...text];
   if (chars.length === 0) return "";
 
-  const now = Date.now();
   return `${chars
     .map((ch, i) => {
       const charTime = now - i * LETTER_WAVE_DELAY_MS;
@@ -166,6 +166,7 @@ let prompt: PromptState | undefined;
 let timer: Timer | undefined;
 let sessionToken = 0;
 let lastSummary: string | undefined;
+let lastMessage: string | undefined;
 
 function padWorkingLabel(verb: string): string {
   const label = `${verb}${WORKING_LABEL_SUFFIX}`;
@@ -220,9 +221,14 @@ function seg(text: string, importance: number): Segment {
   return { text, importance, width: visibleWidth(text) };
 }
 
-function collectRunningSegments(snapshot: HudSnapshot, verb: string, elapsedMs: number): Segment[] {
+function collectRunningSegments(
+  snapshot: HudSnapshot,
+  verb: string,
+  elapsedMs: number,
+  now: number,
+): Segment[] {
   const segments: Segment[] = [];
-  segments.push(seg(paintLetterWave(padWorkingLabel(verb)), 100));
+  segments.push(seg(paintLetterWave(padWorkingLabel(verb), now), 100));
   segments.push(seg(paint(C.fgMuted, formatWorkingElapsed(elapsedMs)), 95));
 
   const inputTokens = formatTokens(snapshot.inputValue ?? snapshot.promptIn);
@@ -306,9 +312,15 @@ function tpsSegment(snapshot: HudSnapshot): string {
   return paint(C.fgDim, `${snapshot.tps.estimated ? "~" : ""}${tps}`);
 }
 
-function buildRunningMessage(): string | undefined {
+function pulseFrame(elapsedMs: number): string {
+  const index =
+    Math.floor(Math.max(0, elapsedMs) / PULSE_FRAME_INTERVAL_MS) %
+    PULSE_FRAME_TEXTS.length;
+  return PULSE_FRAME_TEXTS[index] ?? PULSE_FRAME_TEXTS[0]!;
+}
+
+function buildRunningMessage(now = Date.now()): string | undefined {
   if (!prompt) return undefined;
-  const now = Date.now();
   const elapsedMs = now - prompt.startedAt;
 
   if (now - prompt.verbChangedAt >= VERB_ROTATE_MS) {
@@ -316,10 +328,16 @@ function buildRunningMessage(): string | undefined {
     prompt.verbChangedAt = now;
   }
 
-  return fitSegments(
-    collectRunningSegments(cyberWorkingState.snapshot(), prompt.verb, elapsedMs),
+  const hud = fitSegments(
+    collectRunningSegments(
+      cyberWorkingState.snapshot(),
+      prompt.verb,
+      elapsedMs,
+      now,
+    ),
     MESSAGE_BUDGET,
   );
+  return `${pulseFrame(elapsedMs)} ${hud}`;
 }
 
 function buildSummaryMessage(elapsedMs: number, snapshot: HudSnapshot): string {
@@ -349,12 +367,9 @@ function setWorkingMessage(ctx: ExtensionContext | undefined, message?: string):
 }
 
 function applyWorkingIndicator(ctx: ExtensionContext | undefined): boolean {
-  return safeUi(ctx, (uiCtx) => {
-    uiCtx.ui.setWorkingIndicator({
-      frames: PULSE_FRAME_TEXTS,
-      intervalMs: FRAME_INTERVAL_MS,
-    });
-  });
+  // Keep the host working surface active without enabling its independent
+  // animation clock. The message loop below owns every animated cell.
+  return safeUi(ctx, (uiCtx) => uiCtx.ui.setWorkingIndicator({ frames: [] }));
 }
 
 function clearWorkingIndicator(ctx: ExtensionContext | undefined): boolean {
@@ -363,7 +378,7 @@ function clearWorkingIndicator(ctx: ExtensionContext | undefined): boolean {
 
 function stopTimer(target = timer): void {
   if (!target) return;
-  clearInterval(target);
+  clearTimeout(target);
   if (target === timer) timer = undefined;
 }
 
@@ -371,6 +386,48 @@ function invalidateSession(): void {
   sessionToken += 1;
   stopTimer();
   prompt = undefined;
+  lastMessage = undefined;
+}
+
+function updateWorkingMessage(
+  ctx: ExtensionContext | undefined,
+  now = Date.now(),
+): boolean {
+  const message = buildRunningMessage(now);
+  if (message === undefined || message === lastMessage) return true;
+
+  const ok = setWorkingMessage(ctx, message);
+  if (ok) lastMessage = message;
+  return ok;
+}
+
+function scheduleMessageFrame(
+  ctx: ExtensionContext | undefined,
+  token: number,
+  delay = MESSAGE_REFRESH_MS,
+): void {
+  const next = setTimeout(() => {
+    if (timer === next) timer = undefined;
+    if (token !== sessionToken || !prompt) return;
+
+    const startedAt = Date.now();
+    if (!updateWorkingMessage(ctx, startedAt)) return;
+
+    // Compensate for synchronous UI work so a busy render does not create
+    // another competing cadence or gradually slow the animation.
+    const nextDelay = Math.max(1, MESSAGE_REFRESH_MS - (Date.now() - startedAt));
+    scheduleMessageFrame(ctx, token, nextDelay);
+  }, delay);
+  timer = next;
+  if (typeof next.unref === "function") next.unref();
+}
+
+function hasUsableUi(ctx: ExtensionContext | undefined): boolean {
+  try {
+    return Boolean(ctx?.hasUI);
+  } catch {
+    return false;
+  }
 }
 
 function startPrompt(ctx: ExtensionContext): void {
@@ -381,8 +438,9 @@ function startPrompt(ctx: ExtensionContext): void {
     verbChangedAt: now,
   };
   lastSummary = undefined;
+  lastMessage = undefined;
   applyWorkingIndicator(ctx);
-  setWorkingMessage(ctx, buildRunningMessage());
+  updateWorkingMessage(ctx, now);
 }
 
 function finishPrompt(ctx: ExtensionContext | undefined): void {
@@ -391,6 +449,7 @@ function finishPrompt(ctx: ExtensionContext | undefined): void {
   const snapshot = cyberWorkingState.snapshot();
   lastSummary = buildSummaryMessage(elapsedMs, snapshot);
   prompt = undefined;
+  lastMessage = undefined;
   setWorkingMessage(ctx, lastSummary);
 }
 
@@ -407,26 +466,29 @@ export function registerCyberWorking(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_start", (_event, ctx) => {
-    if (!ctx.hasUI) return;
+    if (!hasUsableUi(ctx)) return;
+    if (!prompt) startPrompt(ctx);
+    else updateWorkingMessage(ctx);
+
     stopTimer();
-    startPrompt(ctx);
-    const token = sessionToken;
-    const activeTimer = setInterval(() => {
-      if (token !== sessionToken) {
-        stopTimer(activeTimer);
-        return;
-      }
-      if (!setWorkingMessage(ctx, buildRunningMessage())) {
-        stopTimer(activeTimer);
-      }
-    }, MESSAGE_REFRESH_MS);
-    timer = activeTimer;
-    if (typeof activeTimer.unref === "function") activeTimer.unref();
+    scheduleMessageFrame(ctx, sessionToken);
   });
 
-  pi.on("agent_end", (_event, ctx) => {
+  // A low-level run may be followed by retry, compaction, or queued input.
+  // Pause the message clock here; only agent_settled means the prompt is done.
+  pi.on("agent_end", () => {
+    stopTimer();
+  });
+
+  pi.on("agent_settled", (_event, ctx) => {
     stopTimer();
     finishPrompt(ctx);
+  });
+
+  pi.on("session_tree", (_event, ctx) => {
+    invalidateSession();
+    lastSummary = undefined;
+    setWorkingMessage(ctx);
   });
 
   pi.on("session_before_switch", () => {
