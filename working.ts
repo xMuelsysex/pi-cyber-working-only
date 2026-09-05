@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { cyberWorkingState, type HudSnapshot } from "./editor-state.js";
 
 type Timer = ReturnType<typeof setTimeout>;
+type TuiMode = "regular" | "fullscreen";
 type RGB = readonly [number, number, number];
 
 const C = {
@@ -24,6 +25,7 @@ const MESSAGE_REFRESH_MS = 33;
 const MESSAGE_BUDGET = 100;
 const VERB_ROTATE_MS = 8_000;
 const TURN_ICON = "\u{f0109}";
+const TUI_MODE_PROBE_KEY = "cyber-working-tui-mode";
 
 function rgb(c: RGB): string {
   return `\x1b[38;2;${c[0]};${c[1]};${c[2]}m`;
@@ -167,6 +169,7 @@ let timer: Timer | undefined;
 let sessionToken = 0;
 let lastSummary: string | undefined;
 let lastMessage: string | undefined;
+let tuiMode: TuiMode = "regular";
 
 function padWorkingLabel(verb: string): string {
   const label = `${verb}${WORKING_LABEL_SUFFIX}`;
@@ -321,6 +324,10 @@ function pulseFrame(elapsedMs: number): string {
 
 function buildRunningMessage(now = Date.now()): string | undefined {
   if (!prompt) return undefined;
+  if (tuiMode === "regular") {
+    return `${PULSE_FRAME_TEXTS[0]} ${paint(C.fgMuted, padWorkingLabel(prompt.verb))}`;
+  }
+
   const elapsedMs = now - prompt.startedAt;
 
   if (now - prompt.verbChangedAt >= VERB_ROTATE_MS) {
@@ -366,6 +373,28 @@ function setWorkingMessage(ctx: ExtensionContext | undefined, message?: string):
   return safeUi(ctx, (uiCtx) => uiCtx.ui.setWorkingMessage(message));
 }
 
+function installTuiModeProbe(ctx: ExtensionContext | undefined): boolean {
+  return safeUi(ctx, (uiCtx) => {
+    uiCtx.ui.setWidget(
+      TUI_MODE_PROBE_KEY,
+      (tui) => {
+        tuiMode = tui.mode === "fullscreen" ? "fullscreen" : "regular";
+        if (tuiMode === "fullscreen" && prompt && !timer && ctx) {
+          scheduleMessageFrame(ctx, sessionToken);
+        } else if (tuiMode === "regular") {
+          stopTimer();
+        }
+        return { render: () => [], invalidate() {} };
+      },
+      { placement: "aboveEditor" },
+    );
+  });
+}
+
+function clearTuiModeProbe(ctx: ExtensionContext | undefined): boolean {
+  return safeUi(ctx, (uiCtx) => uiCtx.ui.setWidget(TUI_MODE_PROBE_KEY, undefined));
+}
+
 function applyWorkingIndicator(ctx: ExtensionContext | undefined): boolean {
   // Keep the host working surface active without enabling its independent
   // animation clock. The message loop below owns every animated cell.
@@ -389,6 +418,9 @@ function invalidateSession(): void {
   lastMessage = undefined;
 }
 
+// TuiMainScreen puts the working row above the fixed dock. In regular mode,
+// changing that hidden row forces a redraw that can replay scrollback; the
+// fullscreen renderer has a fixed viewport, so it can keep the live HUD.
 function updateWorkingMessage(
   ctx: ExtensionContext | undefined,
   now = Date.now(),
@@ -408,7 +440,7 @@ function scheduleMessageFrame(
 ): void {
   const next = setTimeout(() => {
     if (timer === next) timer = undefined;
-    if (token !== sessionToken || !prompt) return;
+    if (token !== sessionToken || !prompt || tuiMode !== "fullscreen") return;
 
     const startedAt = Date.now();
     if (!updateWorkingMessage(ctx, startedAt)) return;
@@ -456,6 +488,8 @@ function finishPrompt(ctx: ExtensionContext | undefined): void {
 export function registerCyberWorking(pi: ExtensionAPI): void {
   pi.on("session_start", (event, ctx) => {
     invalidateSession();
+    tuiMode = "regular";
+    installTuiModeProbe(ctx);
     applyWorkingIndicator(ctx);
     if (event?.reason === "reload" && lastSummary) {
       setWorkingMessage(ctx, lastSummary);
@@ -468,10 +502,10 @@ export function registerCyberWorking(pi: ExtensionAPI): void {
   pi.on("agent_start", (_event, ctx) => {
     if (!hasUsableUi(ctx)) return;
     if (!prompt) startPrompt(ctx);
-    else updateWorkingMessage(ctx);
+    else if (tuiMode === "fullscreen") updateWorkingMessage(ctx);
 
     stopTimer();
-    scheduleMessageFrame(ctx, sessionToken);
+    if (tuiMode === "fullscreen") scheduleMessageFrame(ctx, sessionToken);
   });
 
   // A low-level run may be followed by retry, compaction, or queued input.
@@ -498,6 +532,8 @@ export function registerCyberWorking(pi: ExtensionAPI): void {
   pi.on("session_shutdown", (_event, ctx) => {
     setWorkingMessage(ctx);
     clearWorkingIndicator(ctx);
+    clearTuiModeProbe(ctx);
+    tuiMode = "regular";
     invalidateSession();
   });
 }

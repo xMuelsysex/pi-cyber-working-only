@@ -6,6 +6,10 @@ const source = await readFile(new URL("../working.ts", import.meta.url), "utf8")
 
 test("working HUD owns one visual clock", () => {
   assert.match(source, /const MESSAGE_REFRESH_MS = 33;/);
+  assert.match(source, /type TuiMode = "regular" \| "fullscreen";/);
+  assert.match(source, /tui\.mode === "fullscreen"/);
+  assert.match(source, /if \(tuiMode === "regular"\)/);
+  assert.match(source, /if \(tuiMode === "fullscreen"\) scheduleMessageFrame/);
   assert.match(source, /setWorkingIndicator\(\{ frames: \[\] \}\)/);
   assert.doesNotMatch(source, /setWorkingIndicator\(\{[\s\S]*intervalMs/);
   assert.doesNotMatch(source, /\bsetInterval\b|\bclearInterval\b/);

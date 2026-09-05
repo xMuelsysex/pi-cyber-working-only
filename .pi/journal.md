@@ -1,5 +1,8 @@
 # 项目记忆
 
+- 2026-09-05：regular `TuiMainScreen` 中不要以 33ms 频率改写 host working slot：工作行位于文档与固定 Agent/Todo dock 之间，隐藏行的动态更新会触发重绘并把旧帧 replay 到 scrollback。working-only 通过零行 widget 工厂读取 `tui.mode`，regular 固定启动帧，fullscreen 保留单一消息时钟。
+- 2026-09-03：主人确认后通过 `gh api` 为 `xMuelsysex/pi-cyber-working-only` 开启 `allow_auto_merge=true` 并回读确认；仓库尚无 `PI_SYNC_TOKEN`，未复用权限过宽的当前 gh token，待专用最小权限 token 安全配置。
+- 2026-09-03：上游 `pi-cyber-ui` 自动同步采用只读 verify → 白名单 artifact → 专用 token publish 三段边界；仅合并 `working.ts`，固定 npm 基线完整性与 GitHub Actions SHA，候选验证失败或三方冲突不启用 auto-merge，已有 PR 的验证退化会撤销旧请求。
 - 2026-09-03：对照 pi-cyber-ui 0.1.34 后，working-only 工作栏改为单一 wall-clock 消息循环：`setWorkingIndicator({ frames: [] })` 只保留宿主工作面，脉冲与 HUD 统一由 33ms 自调度 `setWorkingMessage` 输出，并跳过相同帧；`agent_end` 只暂停、`agent_settled` 才收尾。这样可避免宿主 Loader 与扩展文本时钟争用同一工作行。
 - 2026-08-30：pi-cockpit 0.19.0 将 working message 写入从直接 `ctx.ui.setWorkingMessage(...)` 重构为 `ambientSurfaces.setWorkingMessage(...)`，导致旧版本守卫匹配失败。`maestro-guard.ts` 现同时匹配两种调用路径；临时 fixture 测试、源码解析检查和当前安装树修复均通过。
 - 2026-08-09：cyber 内置 cockpit 双守卫（maestro-guard.ts）。① `ensureCockpitDeferred`：强制 cockpit.json `ambientWorkingMessage: false`（保留其他字段）。② `ensureCockpitPatched`：cockpit ≥0.12 官方删除了该配置项，激活时自动给 `~/.pi/agent/npm/node_modules/pi-cockpit/src/` 的 index.ts/types.ts/config.ts 注入 `cyber-guard` 守卫（幂等），升级后自动自愈。两函数在 activate + session_start 调用。
