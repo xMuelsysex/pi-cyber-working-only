@@ -2,25 +2,25 @@
 
 ## 目标与决策
 
-- 目标：修复截图中 cyber 工作消息与 cockpit 动态 Agent/Todo 工作导航栏在 regular TUI 中重叠、历史帧堆叠的问题。
-- 当前证据：`cockpit.json` 已设置 `ambientWorkingMessage: false`；截图中的 `● Reasoning/Rendering/...` 是 cyber 写入的 host working slot，regular `TuiMainScreen` 将该行放在文档内容与固定 Agent/Todo dock 之间。动态改写隐藏行会触发重绘并把旧帧 replay 到 scrollback，形成重叠历史工作栏。
-- 决策：通过 host 的零行 widget 工厂读取实际 `tui.mode`；regular 模式只写入启动时的一帧工作消息，不启动消息时钟，避免动态隐藏行重绘；fullscreen 模式继续使用单一 33ms 消息时钟。移除本轮误判的 ownership replay，不改变 Cockpit Agent/Todo 所有权。
+- 目标：修复 regular TUI 中 Cyber 工作 HUD 与 Cockpit Agent/Todo 导航栏重绘时的历史帧重叠，同时保留完整的耗时、Token、TPS、回合和取消提示。
+- 当前证据：`cockpit.json` 已设置 `ambientWorkingMessage: false`；Cyber 是 host working slot 的唯一写入者。regular `TuiMainScreen` 将该行放在文档内容与固定 Agent/Todo dock 之间，动态行更新必须由 viewport-stability 保留隐藏前缀，避免重放 scrollback。
+- 决策：保留单一 33ms wall-clock 消息循环，regular 与 fullscreen 都输出完整 HUD；不再用 regular 静态分支或 TUI mode probe 砍掉状态信息。Cockpit 的 viewport-stability 补丁负责 regular 隐藏行的原地更新，Cockpit Agent/Todo 所有权保持不变。
 
 ## 计划
 
-1. 检查 cyber、cockpit 和 teammate 的动态表面注册/所有权路径，确认可复现根因。
-2. 修改最少文件，使工作栏只由单一动态表面负责，避免重叠刷新。
-3. 增加或更新针对性回归检查，运行目标测试、类型检查和 diff 检查。
-4. 将验证命令、输出摘要与剩余环境风险写入本记录，并更新 journal。
+1. 检查 Cyber、Cockpit 和 TUI 的工作面、dock 布局与隐藏 viewport 更新路径。
+2. 移除上一版 regular 静态降级，恢复完整 HUD，并保持脉冲与 HUD 由单一时钟输出。
+3. 更新针对性回归检查，验证 regular/fullscreen 都持续刷新且生命周期收尾正确。
+4. 记录验证命令、输出摘要与剩余环境风险，并更新 journal。
 
 ## 验证记录
 
 - 通过：`node --experimental-strip-types --import ./test/register-ts-extension-loader.mjs --test test/*.test.ts`，11/11 通过。
+- 通过：`node --experimental-strip-types --import ./test/register-ts-extension-loader.mjs --test test/working-architecture.test.ts`，2/2 通过。
 - 通过：`npm run typecheck`。
-- 通过：`node --experimental-strip-types --check working.ts`、`index.ts`、`maestro-guard.ts`。
-- 通过：`git diff --check`。
-- 新增运行时回归：regular TUI 80ms 内工作消息写入次数保持不变；fullscreen TUI 仍持续刷新 HUD。
+- 通过：`node --check --experimental-strip-types working.ts`、三个测试文件；`git diff --check`。
+- 通过：真实 Pi 0.85.1 TuiMainScreen + Cockpit viewport-stability 最小实验：隐藏 working 行连续更新时 full redraw 保持 1 次，工作消息仍可更新；可见 dock 更新正常。
 
 ## 结论
 
-regular TUI 的工作行现在只在 prompt 开始时写入一次静态工作动词，不再显示会过期的 `0s`/Token/TPS 快照；Cockpit 的 Agent/Todo 导航栏不会再被 Cyber 的 33ms 动态更新反复推入 scrollback。fullscreen 保留实时 Cyber HUD。当前工作树仍包含此前未提交的 `.pi/`、依赖和测试基础设施改动，未触碰或清理。
+regular 与 fullscreen 现在都保留实时 Cyber HUD；工作栏由单一消息时钟驱动，regular 隐藏 viewport 由 Cockpit viewport-stability 保留旧前缀，避免重绘把旧状态推入 scrollback。当前工作树仍包含此前未提交的 package、依赖、同步流水线和测试基础设施改动，本次只改动工作栏源代码与对应回归断言。
