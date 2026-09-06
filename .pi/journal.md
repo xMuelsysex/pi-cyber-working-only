@@ -1,6 +1,12 @@
 # 项目记忆
 
-- 2026-09-06：regular `TuiMainScreen` 的完整 Cyber working HUD 不能通过静态分支规避重叠；正确做法是保留单一 33ms 消息时钟，并依赖 Cockpit viewport-stability 保留隐藏 scrollback 前缀，使耗时、Token、TPS、回合和取消提示继续原地更新。
+- 2026-09-06：按主人限定范围完成 P1.1 native working surface ownership 修复：引入版本化全局 lease registry，所有 HUD 更新持续确认 lease，teardown 仅恢复 visibility 且不覆盖其他扩展的 working message/indicator；`test/working-widget.test.ts` 3/3 与 `npm run typecheck` 通过。按确认清理 `node_modules/`、`.workflow/`、`.pi/self-evolve.json` 及上游同步维护链；插件 CI、源码、测试、构建配置和修复记录保留。
+
+- 2026-09-06：完成代码审查整改：HUD 改用公开声明的 `@earendil-works/pi-tui` 测试入口，UI 动态更新失败按 100ms 受控重试；清理仅在宿主确认成功后释放 widget 注册状态；CI 显式使用 lockfile 和串行测试，上游同步冲突按多冲突码阻断发布。14/14 测试、干净离线 npm ci、类型/语法检查和 workflow YAML 解析通过。
+
+- 2026-09-06：完成工作导航栏重叠修复与代码审查整改：HUD 使用唯一 `cyber-working-hud` widget key 走宿主正式布局，保留 regular/fullscreen 完整状态；UI context 失效、部分原生 surface 恢复、同步冲突与多冲突块均有明确失败路径和回归；真实 `TuiMainScreen` 集成及 14/14 测试通过。
+- 2026-09-06：重叠根因最终通过宿主正式 widget API 修复：Cyber 使用唯一 `cyber-working-hud` key 在 `aboveEditor` 表面替换完整 HUD，原生 working-message slot 仅在 teardown 恢复；删除跨包 Cockpit guard，避免加载顺序和版本差异复发。
+- 2026-09-06（已废弃方案）：曾尝试依赖 Cockpit viewport-stability 保留 regular 隐藏 scrollback 前缀；该方案恢复了部分 HUD，但仍把正确性建立在外部运行时 patch 上，已被正式 widget 方案替代。
 - 2026-09-03：主人确认后通过 `gh api` 为 `xMuelsysex/pi-cyber-working-only` 开启 `allow_auto_merge=true` 并回读确认；仓库尚无 `PI_SYNC_TOKEN`，未复用权限过宽的当前 gh token，待专用最小权限 token 安全配置。
 - 2026-09-03：上游 `pi-cyber-ui` 自动同步采用只读 verify → 白名单 artifact → 专用 token publish 三段边界；仅合并 `working.ts`，固定 npm 基线完整性与 GitHub Actions SHA，候选验证失败或三方冲突不启用 auto-merge，已有 PR 的验证退化会撤销旧请求。
 - 2026-09-03：对照 pi-cyber-ui 0.1.34 后，working-only 工作栏改为单一 wall-clock 消息循环：`setWorkingIndicator({ frames: [] })` 只保留宿主工作面，脉冲与 HUD 统一由 33ms 自调度 `setWorkingMessage` 输出，并跳过相同帧；`agent_end` 只暂停、`agent_settled` 才收尾。这样可避免宿主 Loader 与扩展文本时钟争用同一工作行。

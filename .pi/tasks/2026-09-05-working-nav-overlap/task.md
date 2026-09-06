@@ -3,24 +3,30 @@
 ## 目标与决策
 
 - 目标：修复 regular TUI 中 Cyber 工作 HUD 与 Cockpit Agent/Todo 导航栏重绘时的历史帧重叠，同时保留完整的耗时、Token、TPS、回合和取消提示。
-- 当前证据：`cockpit.json` 已设置 `ambientWorkingMessage: false`；Cyber 是 host working slot 的唯一写入者。regular `TuiMainScreen` 将该行放在文档内容与固定 Agent/Todo dock 之间，动态行更新必须由 viewport-stability 保留隐藏前缀，避免重放 scrollback。
-- 决策：保留单一 33ms wall-clock 消息循环，regular 与 fullscreen 都输出完整 HUD；不再用 regular 静态分支或 TUI mode probe 砍掉状态信息。Cockpit 的 viewport-stability 补丁负责 regular 隐藏行的原地更新，Cockpit Agent/Todo 所有权保持不变。
+- 当前证据：regular `TuiMainScreen` 的 host working slot 与固定 Agent/Todo dock 属于不同布局面；Cyber 通过 `setWorkingMessage` 高频更新隐藏行时会触发旧帧回放，造成导航栏重叠。
+- 决策：工作 HUD 改为宿主正式 `ctx.ui.setWidget("cyber-working-hud", lines, { placement: "aboveEditor" })` 表面，并以同一个 key 原地替换内容；保留 regular/fullscreen 的完整耗时、Token、TPS、回合和取消提示。移除跨包 Cockpit 源码/config 注入，禁止依赖外部补丁。
+- 决策：native working surface 通过版本化全局 lease registry 管理；HUD 更新持续确认当前 lease，只在仍持有同一 lease 时恢复可见性，释放时不覆盖其他扩展的 working message 或 indicator。
 
 ## 计划
 
 1. 检查 Cyber、Cockpit 和 TUI 的工作面、dock 布局与隐藏 viewport 更新路径。
-2. 移除上一版 regular 静态降级，恢复完整 HUD，并保持脉冲与 HUD 由单一时钟输出。
-3. 更新针对性回归检查，验证 regular/fullscreen 都持续刷新且生命周期收尾正确。
-4. 记录验证命令、输出摘要与剩余环境风险，并更新 journal。
+2. 将 HUD 接入宿主稳定 widget API，移除 Cockpit guard 和所有跨包源码写入。
+3. 更新 fake-TUI 布局回归检查，验证 HUD、Agent、Todo 同时存在且 HUD 不重复。
+4. 修复 UI 暂态失败重试、声明宿主 API 最低版本，并整理 CI/sync 边界。
+5. 记录验证命令、输出摘要与剩余环境风险，并更新 journal。
 
 ## 验证记录
 
-- 通过：`node --experimental-strip-types --import ./test/register-ts-extension-loader.mjs --test test/*.test.ts`，11/11 通过。
-- 通过：`node --experimental-strip-types --import ./test/register-ts-extension-loader.mjs --test test/working-architecture.test.ts`，2/2 通过。
+- 通过：`npm run test -- --test-concurrency=1`，14/14 通过；公开 `@earendil-works/pi-tui` 入口在干净安装后可用。
+- 通过：真实 `TuiMainScreen` regular 集成回归：HUD、Agent、Todo 各占一行；动态 HUD 更新不触发清屏全重绘；终端 resize 只触发一次预期重绘。
 - 通过：`npm run typecheck`。
-- 通过：`node --check --experimental-strip-types working.ts`、三个测试文件；`git diff --check`。
-- 通过：真实 Pi 0.85.1 TuiMainScreen + Cockpit viewport-stability 最小实验：隐藏 working 行连续更新时 full redraw 保持 1 次，工作消息仍可更新；可见 dock 更新正常。
+- 通过：干净离线 `npm ci --ignore-scripts`，受跟踪 lockfile 可安装全部依赖。
+- 通过：`git diff --check`、TypeScript/JavaScript 语法检查、workflow YAML 解析和 workflow shell snippet ShellCheck。
+- 通过：多冲突 `git merge-file` 回归、冲突发布阻断、分支复用和自动合并条件回归均通过。
+- 通过：UI 更新失败按 100ms 受控重试；失效 ExtensionContext 停止重试并保留错误诊断；teardown 清理仅在宿主确认成功后释放注册状态。
+- 通过：P1.1 lease 回归验证，确认重复 Cyber 实例不能互相恢复 native surface，teardown 只恢复 visibility，并保留原生 message/indicator；`test/working-widget.test.ts` 3/3 通过，`npm run typecheck` 与 `git diff --check` 通过。
+- 通过：按主人确认清理 `node_modules/`、`.workflow/`、`.pi/self-evolve.json` 及与插件运行/回归无关的上游同步维护链（`.github/workflows/upstream-sync.yml`、`.upstream/`、`scripts/`、上游同步任务和测试）；插件 CI、源码、测试、构建配置和当前修复记录保留。
 
 ## 结论
 
-regular 与 fullscreen 现在都保留实时 Cyber HUD；工作栏由单一消息时钟驱动，regular 隐藏 viewport 由 Cockpit viewport-stability 保留旧前缀，避免重绘把旧状态推入 scrollback。当前工作树仍包含此前未提交的 package、依赖、同步流水线和测试基础设施改动，本次只改动工作栏源代码与对应回归断言。
+regular 与 fullscreen 保留完整实时 Cyber HUD；唯一 `cyber-working-hud` widget key 负责内容更新，native working surface 由版本化 lease 独占并在 teardown 仅恢复 visibility，Agent/Todo dock 不参与 Cyber 更新。lease 释放不会清空其他扩展写入的 working message 或 indicator。跨包 Cockpit guard 已删除，宿主最低版本通过 `peerDependencies >=0.84.4` 声明；插件 CI 仅检查现存插件源码和测试入口，上游同步自动化维护链已按范围移除。UI context 失效会停止重试并保留诊断，普通暂态更新和 teardown 清理按 100ms 受控重试。

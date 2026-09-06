@@ -23,6 +23,8 @@ const ESC_HINT_AFTER_MS = 10_000;
 const MESSAGE_REFRESH_MS = 33;
 const MESSAGE_BUDGET = 100;
 const VERB_ROTATE_MS = 8_000;
+const RETRY_REFRESH_MS = 100;
+const WORKING_WIDGET_KEY = "cyber-working-hud";
 const TURN_ICON = "\u{f0109}";
 
 function rgb(c: RGB): string {
@@ -164,9 +166,42 @@ interface Segment {
 
 let prompt: PromptState | undefined;
 let timer: Timer | undefined;
+let retryTimer: Timer | undefined;
 let sessionToken = 0;
 let lastSummary: string | undefined;
+let workingMessage: string | undefined;
 let lastMessage: string | undefined;
+let workingWidgetRegistered = false;
+let nativeWorkingSurfaceLease: NativeWorkingSurfaceLease | undefined;
+let uiContextInvalid = false;
+let uiFailureReported = false;
+
+const NATIVE_WORKING_SURFACE_OWNER = "pi-cyber-working";
+const NATIVE_WORKING_SURFACE_REGISTRY_KEY = Symbol.for(
+  "pi-cyber-working.native-working-surface.v1",
+);
+
+interface NativeWorkingSurfaceLease {
+  owner: string;
+  id: number;
+  ctx: ExtensionContext;
+}
+
+interface NativeWorkingSurfaceRegistry {
+  nextId: number;
+  lease?: NativeWorkingSurfaceLease;
+}
+
+function getNativeWorkingSurfaceRegistry(): NativeWorkingSurfaceRegistry {
+  const globals = globalThis as typeof globalThis & Record<symbol, unknown>;
+  const existing = globals[NATIVE_WORKING_SURFACE_REGISTRY_KEY];
+  if (existing && typeof existing === "object") {
+    return existing as NativeWorkingSurfaceRegistry;
+  }
+  const registry: NativeWorkingSurfaceRegistry = { nextId: 0 };
+  globals[NATIVE_WORKING_SURFACE_REGISTRY_KEY] = registry;
+  return registry;
+}
 
 function padWorkingLabel(verb: string): string {
   const label = `${verb}${WORKING_LABEL_SUFFIX}`;
@@ -319,7 +354,7 @@ function pulseFrame(elapsedMs: number): string {
   return PULSE_FRAME_TEXTS[index] ?? PULSE_FRAME_TEXTS[0]!;
 }
 
-function buildRunningMessage(now = Date.now()): string | undefined {
+function buildRunningMessage(now = Date.now(), budget = MESSAGE_BUDGET): string | undefined {
   if (!prompt) return undefined;
 
   const elapsedMs = now - prompt.startedAt;
@@ -336,7 +371,7 @@ function buildRunningMessage(now = Date.now()): string | undefined {
       elapsedMs,
       now,
     ),
-    MESSAGE_BUDGET,
+    budget,
   );
   return `${pulseFrame(elapsedMs)} ${hud}`;
 }
@@ -353,28 +388,178 @@ function buildSummaryMessage(elapsedMs: number, snapshot: HudSnapshot): string {
   return joinDim(parts);
 }
 
-function safeUi(ctx: ExtensionContext | undefined, fn: (ctx: ExtensionContext) => void): boolean {
+function reportUiFailure(operation: string, error: unknown): void {
+  if (uiFailureReported) return;
+  uiFailureReported = true;
+  const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+  console.error(`[pi-cyber-working] ${operation}: ${detail}`);
+}
+
+function readTuiMode(
+  ctx: ExtensionContext | undefined,
+  operation: string,
+): boolean | undefined {
   try {
-    if (!ctx?.hasUI) return true;
+    return ctx?.mode === "tui";
+  } catch (error) {
+    uiContextInvalid = true;
+    reportUiFailure(operation, error);
+    return undefined;
+  }
+}
+
+function readTuiUiAvailability(
+  ctx: ExtensionContext | undefined,
+  operation: string,
+): boolean | undefined {
+  const tui = readTuiMode(ctx, operation);
+  if (tui !== true || !ctx) return tui;
+  try {
+    return ctx.hasUI;
+  } catch (error) {
+    uiContextInvalid = true;
+    reportUiFailure(operation, error);
+    return undefined;
+  }
+}
+
+function runTuiUi(
+  ctx: ExtensionContext | undefined,
+  operation: string,
+  fn: (ctx: ExtensionContext) => void,
+): boolean {
+  const usable = readTuiUiAvailability(ctx, operation);
+  if (usable === undefined) return false;
+  if (!usable || !ctx) return true;
+  try {
     fn(ctx);
     return true;
-  } catch {
+  } catch (error) {
+    reportUiFailure(operation, error);
     return false;
   }
 }
 
-function setWorkingMessage(ctx: ExtensionContext | undefined, message?: string): boolean {
-  return safeUi(ctx, (uiCtx) => uiCtx.ui.setWorkingMessage(message));
+function installWorkingWidget(ctx: ExtensionContext | undefined): boolean {
+  if (workingWidgetRegistered) return true;
+  const usable = readTuiUiAvailability(ctx, "check working HUD widget context");
+  if (usable !== true) return usable === false;
+
+  const installed = runTuiUi(ctx, "register working HUD widget", (uiCtx) => {
+    uiCtx.ui.setWidget(
+      WORKING_WIDGET_KEY,
+      workingMessage ? [workingMessage] : [],
+      { placement: "aboveEditor" },
+    );
+  });
+  if (installed) workingWidgetRegistered = true;
+  return installed;
 }
 
-function applyWorkingIndicator(ctx: ExtensionContext | undefined): boolean {
-  // Keep the host working surface active without enabling its independent
-  // animation clock. The message loop below owns every animated cell.
-  return safeUi(ctx, (uiCtx) => uiCtx.ui.setWorkingIndicator({ frames: [] }));
+function clearWorkingWidget(ctx: ExtensionContext | undefined): boolean {
+  workingMessage = undefined;
+  lastMessage = undefined;
+  if (!workingWidgetRegistered) return true;
+
+  const usable = readTuiUiAvailability(ctx, "check working HUD cleanup context");
+  if (usable === undefined || !usable) {
+    if (usable === false) workingWidgetRegistered = false;
+    return usable === false;
+  }
+  const cleared = runTuiUi(ctx, "clear working HUD widget", (uiCtx) => {
+    uiCtx.ui.setWidget(WORKING_WIDGET_KEY, undefined);
+  });
+  if (cleared) workingWidgetRegistered = false;
+  return cleared;
 }
 
-function clearWorkingIndicator(ctx: ExtensionContext | undefined): boolean {
-  return safeUi(ctx, (uiCtx) => uiCtx.ui.setWorkingIndicator());
+function claimNativeWorkingSurface(ctx: ExtensionContext | undefined): boolean {
+  const usable = readTuiUiAvailability(ctx, "check native working surface context");
+  if (usable === undefined || !usable || !ctx) return usable === false;
+
+  const registry = getNativeWorkingSurfaceRegistry();
+  let lease = registry.lease;
+  if (lease && lease.owner !== NATIVE_WORKING_SURFACE_OWNER) {
+    reportUiFailure(
+      "claim native working surface",
+      new Error(`native working surface is owned by ${lease.owner}`),
+    );
+    return false;
+  }
+
+  if (lease && lease.ctx !== ctx) {
+    restoreNativeWorkingSurface(lease);
+    if (registry.lease === lease) registry.lease = undefined;
+    lease = undefined;
+  }
+
+  const claimed = runTuiUi(ctx, "claim native working surface", (uiCtx) => {
+    uiCtx.ui.setWorkingVisible(false);
+  });
+  if (!claimed) return false;
+
+  if (!lease) {
+    lease = {
+      owner: NATIVE_WORKING_SURFACE_OWNER,
+      id: ++registry.nextId,
+      ctx,
+    };
+    registry.lease = lease;
+  }
+  nativeWorkingSurfaceLease = lease;
+  return true;
+}
+
+function restoreNativeWorkingSurface(
+  lease: NativeWorkingSurfaceLease | undefined,
+): boolean {
+  const registry = getNativeWorkingSurfaceRegistry();
+  if (!lease || registry.lease !== lease) return true;
+
+  const usable = readTuiUiAvailability(lease.ctx, "check native working surface restore context");
+  if (usable === undefined) return false;
+  if (!usable) {
+    registry.lease = undefined;
+    if (nativeWorkingSurfaceLease === lease) nativeWorkingSurfaceLease = undefined;
+    return true;
+  }
+
+  const restored = runTuiUi(lease.ctx, "restore native working surface", (uiCtx) => {
+    uiCtx.ui.setWorkingVisible(true);
+  });
+  if (restored && registry.lease === lease) {
+    registry.lease = undefined;
+    if (nativeWorkingSurfaceLease === lease) nativeWorkingSurfaceLease = undefined;
+  }
+  return restored;
+}
+
+function publishWorkingMessage(
+  ctx: ExtensionContext | undefined,
+  message: string | undefined,
+  force = false,
+): boolean {
+  if (!force && message === lastMessage && message === workingMessage) {
+    return claimNativeWorkingSurface(ctx);
+  }
+  workingMessage = message;
+  const usable = readTuiUiAvailability(ctx, "check working HUD publish context");
+  if (usable === undefined) return false;
+  if (!usable) {
+    lastMessage = message;
+    return true;
+  }
+  if (!claimNativeWorkingSurface(ctx)) return false;
+  if (!workingWidgetRegistered && !installWorkingWidget(ctx)) return false;
+  const published = runTuiUi(ctx, "publish working HUD", (uiCtx) => {
+    uiCtx.ui.setWidget(
+      WORKING_WIDGET_KEY,
+      message ? [message] : [],
+      { placement: "aboveEditor" },
+    );
+  });
+  if (published) lastMessage = message;
+  return published;
 }
 
 function stopTimer(target = timer): void {
@@ -383,25 +568,29 @@ function stopTimer(target = timer): void {
   if (target === timer) timer = undefined;
 }
 
+function stopRetryTimer(): void {
+  if (!retryTimer) return;
+  clearTimeout(retryTimer);
+  retryTimer = undefined;
+}
+
 function invalidateSession(): void {
   sessionToken += 1;
   stopTimer();
+  stopRetryTimer();
   prompt = undefined;
+  workingMessage = undefined;
   lastMessage = undefined;
+  uiContextInvalid = false;
+  uiFailureReported = false;
 }
 
-// Cockpit's viewport-stability patch preserves hidden regular-mode scrollback
-// while this single working surface updates in place.
 function updateWorkingMessage(
   ctx: ExtensionContext | undefined,
   now = Date.now(),
 ): boolean {
   const message = buildRunningMessage(now);
-  if (message === undefined || message === lastMessage) return true;
-
-  const ok = setWorkingMessage(ctx, message);
-  if (ok) lastMessage = message;
-  return ok;
+  return publishWorkingMessage(ctx, message);
 }
 
 function scheduleMessageFrame(
@@ -411,26 +600,77 @@ function scheduleMessageFrame(
 ): void {
   const next = setTimeout(() => {
     if (timer === next) timer = undefined;
-    if (token !== sessionToken || !prompt) return;
+    if (token !== sessionToken || !prompt || uiContextInvalid) return;
 
     const startedAt = Date.now();
-    if (!updateWorkingMessage(ctx, startedAt)) return;
+    const updated = updateWorkingMessage(ctx, startedAt);
+    if (uiContextInvalid) return;
 
-    // Compensate for synchronous UI work so a busy render does not create
-    // another competing cadence or gradually slow the animation.
-    const nextDelay = Math.max(1, MESSAGE_REFRESH_MS - (Date.now() - startedAt));
+    // Keep retrying after a transient render failure; a failed UI request must
+    // not permanently stop the only clock that owns the working HUD.
+    const nextDelay = updated
+      ? Math.max(1, MESSAGE_REFRESH_MS - (Date.now() - startedAt))
+      : RETRY_REFRESH_MS;
     scheduleMessageFrame(ctx, token, nextDelay);
   }, delay);
   timer = next;
   if (typeof next.unref === "function") next.unref();
 }
 
+function scheduleWorkingSetupRetry(
+  ctx: ExtensionContext | undefined,
+  token: number,
+): void {
+  stopRetryTimer();
+  const next = setTimeout(() => {
+    if (retryTimer === next) retryTimer = undefined;
+    if (token !== sessionToken || prompt || uiContextInvalid) return;
+    if (
+      claimNativeWorkingSurface(ctx) &&
+      installWorkingWidget(ctx) &&
+      publishWorkingMessage(ctx, workingMessage, true)
+    ) return;
+    scheduleWorkingSetupRetry(ctx, token);
+  }, RETRY_REFRESH_MS);
+  retryTimer = next;
+  if (typeof next.unref === "function") next.unref();
+}
+
+function scheduleSummaryRetry(
+  ctx: ExtensionContext | undefined,
+  token: number,
+): void {
+  stopRetryTimer();
+  const next = setTimeout(() => {
+    if (retryTimer === next) retryTimer = undefined;
+    if (token !== sessionToken || prompt || !lastSummary || uiContextInvalid) return;
+    if (publishWorkingMessage(ctx, lastSummary)) return;
+    scheduleSummaryRetry(ctx, token);
+  }, RETRY_REFRESH_MS);
+  retryTimer = next;
+  if (typeof next.unref === "function") next.unref();
+}
+
+function scheduleSurfaceCleanupRetry(
+  ctx: ExtensionContext | undefined,
+  token: number,
+  lease: NativeWorkingSurfaceLease | undefined,
+): void {
+  stopRetryTimer();
+  const next = setTimeout(() => {
+    if (retryTimer === next) retryTimer = undefined;
+    if (token !== sessionToken || uiContextInvalid) return;
+    const cleared = clearWorkingWidget(ctx);
+    const restored = restoreNativeWorkingSurface(lease);
+    if (cleared && restored) return;
+    scheduleSurfaceCleanupRetry(ctx, token, lease);
+  }, RETRY_REFRESH_MS);
+  retryTimer = next;
+  if (typeof next.unref === "function") next.unref();
+}
+
 function hasUsableUi(ctx: ExtensionContext | undefined): boolean {
-  try {
-    return Boolean(ctx?.hasUI);
-  } catch {
-    return false;
-  }
+  return readTuiUiAvailability(ctx, "check working HUD UI context") === true;
 }
 
 function startPrompt(ctx: ExtensionContext): void {
@@ -442,7 +682,10 @@ function startPrompt(ctx: ExtensionContext): void {
   };
   lastSummary = undefined;
   lastMessage = undefined;
-  applyWorkingIndicator(ctx);
+  uiFailureReported = false;
+  stopRetryTimer();
+  if (!claimNativeWorkingSurface(ctx)) return;
+  installWorkingWidget(ctx);
   updateWorkingMessage(ctx, now);
 }
 
@@ -453,18 +696,23 @@ function finishPrompt(ctx: ExtensionContext | undefined): void {
   lastSummary = buildSummaryMessage(elapsedMs, snapshot);
   prompt = undefined;
   lastMessage = undefined;
-  setWorkingMessage(ctx, lastSummary);
+  if (!publishWorkingMessage(ctx, lastSummary)) {
+    scheduleSummaryRetry(ctx, sessionToken);
+  }
 }
 
 export function registerCyberWorking(pi: ExtensionAPI): void {
   pi.on("session_start", (event, ctx) => {
+    const previousLease = nativeWorkingSurfaceLease ?? getNativeWorkingSurfaceRegistry().lease;
+    if (previousLease) restoreNativeWorkingSurface(previousLease);
     invalidateSession();
-    applyWorkingIndicator(ctx);
-    if (event?.reason === "reload" && lastSummary) {
-      setWorkingMessage(ctx, lastSummary);
-    } else {
-      lastSummary = undefined;
-      setWorkingMessage(ctx);
+    lastSummary = event?.reason === "reload" ? lastSummary : undefined;
+    workingMessage = lastSummary;
+    const hidden = claimNativeWorkingSurface(ctx);
+    const installed = hidden && installWorkingWidget(ctx);
+    const published = installed && publishWorkingMessage(ctx, workingMessage, true);
+    if (!(hidden && installed && published)) {
+      scheduleWorkingSetupRetry(ctx, sessionToken);
     }
   });
 
@@ -491,16 +739,24 @@ export function registerCyberWorking(pi: ExtensionAPI): void {
   pi.on("session_tree", (_event, ctx) => {
     invalidateSession();
     lastSummary = undefined;
-    setWorkingMessage(ctx);
+    if (!publishWorkingMessage(ctx, undefined, true)) {
+      scheduleWorkingSetupRetry(ctx, sessionToken);
+    }
   });
 
-  pi.on("session_before_switch", () => {
+  pi.on("session_before_switch", (_event, ctx) => {
+    const lease = nativeWorkingSurfaceLease ?? getNativeWorkingSurfaceRegistry().lease;
     invalidateSession();
+    const cleared = clearWorkingWidget(ctx);
+    const restored = restoreNativeWorkingSurface(lease);
+    if (!(cleared && restored)) scheduleSurfaceCleanupRetry(ctx, sessionToken, lease);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
-    setWorkingMessage(ctx);
-    clearWorkingIndicator(ctx);
+    const lease = nativeWorkingSurfaceLease ?? getNativeWorkingSurfaceRegistry().lease;
     invalidateSession();
+    const cleared = clearWorkingWidget(ctx);
+    const restored = restoreNativeWorkingSurface(lease);
+    if (!(cleared && restored)) scheduleSurfaceCleanupRetry(ctx, sessionToken, lease);
   });
 }
