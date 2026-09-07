@@ -9,8 +9,6 @@ test("working HUD uses the native status slot and keeps the full surface", () =>
   assert.doesNotMatch(source, /WORKING_WIDGET_KEY|setWidget\(/);
   assert.match(source, /setWorkingMessage\(message\)/);
   assert.match(source, /setEditorComponent\(/);
-  assert.match(source, /getEditorComponent\?\.\(\)/);
-  assert.match(source, /embedWorkingStatus/);
   assert.match(source, /new CustomEditor\(tui, theme, keybindings\)/);
   assert.match(source, /setWorkingVisible\(true\)/);
   assert.match(source, /setWorkingIndicator\(\{[\s\S]*frames: \[""\]/);

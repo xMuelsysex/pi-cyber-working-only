@@ -175,9 +175,7 @@ let lastSummary: string | undefined;
 let workingMessage: string | undefined;
 let lastMessage: string | undefined;
 let nativeWorkingIndicatorConfigured = false;
-let nativeWorkingStatusEditorFactory:
-  | NonNullable<Parameters<ExtensionContext["ui"]["setEditorComponent"]>[0]>
-  | undefined;
+let nativeWorkingStatusSlotConfigured = false;
 let nativeWorkingSurfaceLease: NativeWorkingSurfaceLease | undefined;
 let uiContextInvalid = false;
 let uiFailureReported = false;
@@ -455,42 +453,20 @@ function clearWorkingSurface(_ctx: ExtensionContext | undefined): boolean {
 function configureNativeWorkingStatusSlot(
   ctx: ExtensionContext | undefined,
 ): boolean {
+  if (nativeWorkingStatusSlotConfigured) return true;
   const configured = runTuiUi(ctx, "configure native working status slot", (uiCtx) => {
-    const currentFactory = uiCtx.ui.getEditorComponent?.();
-    if (
-      nativeWorkingStatusEditorFactory !== undefined &&
-      currentFactory === nativeWorkingStatusEditorFactory
-    ) {
-      return;
-    }
-
-    const guardedFactory: NonNullable<
-      Parameters<ExtensionContext["ui"]["setEditorComponent"]>[0]
-    > = (tui, theme, keybindings) => {
-      const editor = currentFactory
-        ? currentFactory(tui, theme, keybindings)
-        : new CustomEditor(tui, theme, keybindings);
-      const editorWithWorkingStatus = editor as unknown as {
-        embedWorkingStatus?: boolean;
-      };
-      if ("embedWorkingStatus" in editorWithWorkingStatus) {
-        // Preserve custom editor styling while reserving the native status row.
-        editorWithWorkingStatus.embedWorkingStatus = false;
-      }
-      return editor;
-    };
-
-    uiCtx.ui.setEditorComponent(guardedFactory);
-    nativeWorkingStatusEditorFactory = guardedFactory;
+    uiCtx.ui.setEditorComponent((tui, theme, keybindings) =>
+      // Keep the host working row in statusContainer instead of the editor border.
+      new CustomEditor(tui, theme, keybindings),
+    );
   });
+  if (configured) nativeWorkingStatusSlotConfigured = true;
   return configured;
 }
 
 function claimNativeWorkingSurface(ctx: ExtensionContext | undefined): boolean {
   const usable = readTuiUiAvailability(ctx, "check native working surface context");
   if (usable === undefined || !usable || !ctx) return usable === false;
-
-  if (!configureNativeWorkingStatusSlot(ctx)) return false;
 
   const registry = getNativeWorkingSurfaceRegistry();
   let lease = registry.lease;
@@ -729,6 +705,7 @@ export function registerCyberWorking(pi: ExtensionAPI): void {
   pi.on("session_start", (event, ctx) => {
     const previousLease = nativeWorkingSurfaceLease ?? getNativeWorkingSurfaceRegistry().lease;
     if (previousLease) restoreNativeWorkingSurface(previousLease);
+    nativeWorkingStatusSlotConfigured = false;
     invalidateSession();
     const configured = configureNativeWorkingStatusSlot(ctx);
     lastSummary = event?.reason === "reload" ? lastSummary : undefined;
