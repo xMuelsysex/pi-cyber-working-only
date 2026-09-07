@@ -10,6 +10,8 @@ test("places the complete HUD in the native status slot", { concurrency: false }
   let workingMessage: string | undefined;
   let workingMessageUpdates = 0;
   let workingMessageFailures = 0;
+  let editorComponentFactories = 0;
+  let editorComponentFactory: ((...args: never[]) => unknown) | undefined;
   const visibility: boolean[] = [];
   const indicators: unknown[] = [];
   const pendingText = "Queued | next response";
@@ -39,6 +41,10 @@ test("places the complete HUD in the native status slot", { concurrency: false }
     setWorkingIndicator(indicator?: unknown): void {
       indicators.push(indicator);
     },
+    setEditorComponent(factory: (...args: never[]) => unknown): void {
+      editorComponentFactories += 1;
+      editorComponentFactory = factory;
+    },
   };
 
   const context = {
@@ -61,6 +67,14 @@ test("places the complete HUD in the native status slot", { concurrency: false }
 
   emit("session_start", { reason: "new" });
   assert.equal(workingMessage, undefined);
+  assert.equal(editorComponentFactories, 1, "working status must use a non-embedded editor");
+  assert.ok(editorComponentFactory);
+  const editor = editorComponentFactory(
+    {} as never,
+    { borderColor: (text: string) => text } as never,
+    {} as never,
+  ) as { embedWorkingStatus?: boolean };
+  assert.notEqual(editor.embedWorkingStatus, true, "working status must stay out of the editor border");
   assert.deepEqual(visibility.at(-1), true);
   assert.equal(indicators.length, 0, "the indicator is configured only for an active prompt");
 
@@ -130,6 +144,7 @@ test("stops cleanup retries for an invalidated host context", { concurrency: fal
     },
     setWorkingVisible: (_visible: boolean) => {},
     setWorkingIndicator: (_indicator?: unknown) => {},
+    setEditorComponent: () => {},
   };
   const activeContext = { mode: "tui" as const, hasUI: true, ui } as unknown as ExtensionContext;
   const pi = {
@@ -195,6 +210,7 @@ test("releases only the native lease without clobbering surface state", { concur
     setWorkingIndicator: () => {
       indicatorCalls += 1;
     },
+    setEditorComponent: () => {},
   };
   const context = { mode: "tui" as const, hasUI: true, ui } as unknown as ExtensionContext;
   const pi = {

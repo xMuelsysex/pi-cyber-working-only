@@ -1,5 +1,7 @@
 # 项目记忆
 
+- 2026-09-07：修复宿主 `0.85.1` 的工作栏再次错位：默认 `CustomEditor` 会把 `WorkingStatusIndicator` 嵌入编辑器顶边，导致实际行序为 `Todo/Agent → 工作栏`。Cyber 在 session 初始化时通过公开 `ctx.ui.setEditorComponent` 创建默认非嵌入的 `CustomEditor`，使 native working status 回到 `statusContainer`，位于待处理文本之后、Agent/Todo dock 之前；完整 HUD 与 dock 保留。目标回归 6/6、类型检查和 `git diff --check` 通过。
+
 - 2026-09-06：修正工作栏布局：`aboveEditor` 会把 HUD 固定在输入栏上方，已改用宿主 native working status slot；宿主 `TuiMainScreen` 的顺序为 pending text → working status → Agent/Todo dock → editor，完整 HUD 保留且不占输入栏 widget 槽位。布局 1/1、架构 2/2、生命周期 3/3 逐文件通过，覆盖 resize 与 session shutdown → reload → agent_start；`npm run typecheck` 和 `git diff --check` 通过。
 
 - 2026-09-06：按主人限定范围完成 P1.1 native working surface ownership 修复：引入版本化全局 lease registry，所有 HUD 更新持续确认 lease，teardown 仅恢复 visibility 且不覆盖其他扩展的 working message/indicator；`test/working-widget.test.ts` 3/3 与 `npm run typecheck` 通过。按确认清理 `node_modules/`、`.workflow/`、`.pi/self-evolve.json` 及上游同步维护链；插件 CI、源码、测试、构建配置和修复记录保留。

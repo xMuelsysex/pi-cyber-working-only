@@ -1,4 +1,8 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  CustomEditor,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { cyberWorkingState, type HudSnapshot } from "./editor-state.js";
 
 type Timer = ReturnType<typeof setTimeout>;
@@ -171,6 +175,7 @@ let lastSummary: string | undefined;
 let workingMessage: string | undefined;
 let lastMessage: string | undefined;
 let nativeWorkingIndicatorConfigured = false;
+let nativeWorkingStatusSlotConfigured = false;
 let nativeWorkingSurfaceLease: NativeWorkingSurfaceLease | undefined;
 let uiContextInvalid = false;
 let uiFailureReported = false;
@@ -445,6 +450,20 @@ function clearWorkingSurface(_ctx: ExtensionContext | undefined): boolean {
   return true;
 }
 
+function configureNativeWorkingStatusSlot(
+  ctx: ExtensionContext | undefined,
+): boolean {
+  if (nativeWorkingStatusSlotConfigured) return true;
+  const configured = runTuiUi(ctx, "configure native working status slot", (uiCtx) => {
+    uiCtx.ui.setEditorComponent((tui, theme, keybindings) =>
+      // Keep the host working row in statusContainer instead of the editor border.
+      new CustomEditor(tui, theme, keybindings),
+    );
+  });
+  if (configured) nativeWorkingStatusSlotConfigured = true;
+  return configured;
+}
+
 function claimNativeWorkingSurface(ctx: ExtensionContext | undefined): boolean {
   const usable = readTuiUiAvailability(ctx, "check native working surface context");
   if (usable === undefined || !usable || !ctx) return usable === false;
@@ -532,6 +551,7 @@ function publishWorkingMessage(
     lastMessage = message;
     return true;
   }
+  if (!configureNativeWorkingStatusSlot(ctx)) return false;
   if (!claimNativeWorkingSurface(ctx)) return false;
   if (prompt && !configureNativeWorkingIndicator(ctx)) return false;
   if (!force && message === lastMessage) return true;
@@ -607,6 +627,7 @@ function scheduleWorkingSetupRetry(
     if (retryTimer === next) retryTimer = undefined;
     if (token !== sessionToken || prompt || uiContextInvalid) return;
     if (
+      configureNativeWorkingStatusSlot(ctx) &&
       claimNativeWorkingSurface(ctx) &&
       publishWorkingMessage(ctx, workingMessage, true)
     ) return;
@@ -684,12 +705,14 @@ export function registerCyberWorking(pi: ExtensionAPI): void {
   pi.on("session_start", (event, ctx) => {
     const previousLease = nativeWorkingSurfaceLease ?? getNativeWorkingSurfaceRegistry().lease;
     if (previousLease) restoreNativeWorkingSurface(previousLease);
+    nativeWorkingStatusSlotConfigured = false;
     invalidateSession();
+    const configured = configureNativeWorkingStatusSlot(ctx);
     lastSummary = event?.reason === "reload" ? lastSummary : undefined;
     workingMessage = lastSummary;
-    const claimed = claimNativeWorkingSurface(ctx);
+    const claimed = configured && claimNativeWorkingSurface(ctx);
     const published = claimed && publishWorkingMessage(ctx, workingMessage, true);
-    if (!(claimed && published)) {
+    if (!(configured && claimed && published)) {
       scheduleWorkingSetupRetry(ctx, sessionToken);
     }
   });
