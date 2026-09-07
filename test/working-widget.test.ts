@@ -5,51 +5,38 @@ import { registerCyberWorking } from "../working.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => void;
 
-test("renders the complete HUD through one stable widget", { concurrency: false }, async () => {
+test("places the complete HUD in the native status slot", { concurrency: false }, async () => {
   const handlers = new Map<string, Handler[]>();
-  let widget: string[] | undefined;
-  let widgetPlacement: string | undefined;
-  let widgetUpdates = 0;
-  let workingMessageCalls = 0;
-  const widgetKeys: string[] = [];
+  let workingMessage: string | undefined;
+  let workingMessageUpdates = 0;
+  let workingMessageFailures = 0;
   const visibility: boolean[] = [];
   const indicators: unknown[] = [];
-  let widgetFailures = 0;
-  const hostWidgets = new Map<string, string[]>();
-  const agentDock = ["Agent | working"];
-  const todoDock = ["Todo | 1 running"];
-  const renderedLines = (): string[] => [
-    ...hostWidgets.values(),
-    ...agentDock,
-    ...todoDock,
-  ].flat();
+  const pendingText = "Queued | next response";
+  const agentDock = "Agent | working";
+  const todoDock = "Todo | 1 running";
+  const renderOrder = (): string[] => [
+    "Assistant output",
+    pendingText,
+    ...(workingMessage ? [workingMessage] : []),
+    agentDock,
+    todoDock,
+    "Input >",
+  ];
 
   const ui = {
-    setWidget(key: string, content: unknown, options?: { placement?: string }): void {
-      assert.equal(key, "cyber-working-hud");
-      widgetKeys.push(key);
-      if (widgetFailures > 0) {
-        widgetFailures -= 1;
-        throw new Error("transient widget update failure");
+    setWorkingMessage(message?: string): void {
+      if (workingMessageFailures > 0) {
+        workingMessageFailures -= 1;
+        throw new Error("transient native working message failure");
       }
-      widgetUpdates += 1;
-      if (content === undefined) {
-        hostWidgets.delete(key);
-        widget = undefined;
-        widgetPlacement = undefined;
-        return;
-      }
-      widgetPlacement = options?.placement;
-      widget = [...(content as string[])];
-      hostWidgets.set(key, widget);
+      workingMessage = message;
+      workingMessageUpdates += 1;
     },
-    setWorkingMessage: () => {
-      workingMessageCalls += 1;
-    },
-    setWorkingVisible: (visible: boolean) => {
+    setWorkingVisible(visible: boolean): void {
       visibility.push(visible);
     },
-    setWorkingIndicator: (indicator?: unknown) => {
+    setWorkingIndicator(indicator?: unknown): void {
       indicators.push(indicator);
     },
   };
@@ -73,19 +60,15 @@ test("renders the complete HUD through one stable widget", { concurrency: false 
   };
 
   emit("session_start", { reason: "new" });
-
-  assert.ok(widget, "the working widget should be installed");
-  assert.deepEqual(widget, []);
-  assert.equal(widgetPlacement, "aboveEditor");
-  assert.deepEqual(visibility.at(-1), false);
-  assert.equal(indicators.length, 0, "claiming the native surface must not overwrite its indicator");
-  assert.deepEqual(renderedLines(), ["Agent | working", "Todo | 1 running"]);
+  assert.equal(workingMessage, undefined);
+  assert.deepEqual(visibility.at(-1), true);
+  assert.equal(indicators.length, 0, "the indicator is configured only for an active prompt");
 
   emit("agent_start");
-  const runningLine = widget?.[0] ?? "";
-  assert.match(runningLine, /0s|↑|↓|t\/s/, "the regular widget keeps the complete HUD");
-  assert.equal(widget?.length, 1);
-  const firstUpdateCount = widgetUpdates;
+  assert.match(workingMessage ?? "", /0s|↑|↓|t\/s/, "the native slot keeps the complete HUD");
+  assert.deepEqual(indicators.at(-1), { frames: [""], intervalMs: 75 });
+  const firstUpdateCount = workingMessageUpdates;
+
   let reportedUiErrors = 0;
   const originalConsoleError = console.error;
   console.error = (...args: unknown[]) => {
@@ -95,58 +78,56 @@ test("renders the complete HUD through one stable widget", { concurrency: false 
     }
     originalConsoleError(...args);
   };
-  widgetFailures = 1;
+  workingMessageFailures = 1;
   try {
     await new Promise((resolve) => setTimeout(resolve, 150));
   } finally {
     console.error = originalConsoleError;
   }
-  assert.ok(widgetUpdates > firstUpdateCount, "a transient widget failure must be retried");
+  assert.ok(workingMessageUpdates > firstUpdateCount, "a transient native update failure must be retried");
   assert.equal(reportedUiErrors, 1, "a UI failure must remain diagnosable");
-  assert.equal(widget?.length, 1);
-  const lines = renderedLines();
-  assert.equal(lines.filter((line) => line === widget?.[0]).length, 1, "HUD must occupy one rendered row");
-  assert.equal(lines.filter((line) => line === agentDock[0]).length, 1, "Agent dock must remain visible");
-  assert.equal(lines.filter((line) => line === todoDock[0]).length, 1, "Todo dock must remain visible");
-  assert.equal(hostWidgets.size, 1, "the host must retain one widget surface");
-  assert.equal(new Set(widgetKeys).size, 1, "all updates must use one host widget key");
-  assert.equal(workingMessageCalls, 0, "the host working-message slot must stay unused");
+
+  const lines = renderOrder();
+  assert.equal(lines.filter((line) => line === workingMessage).length, 1, "HUD must occupy one rendered row");
+  assert.equal(lines.filter((line) => line === agentDock).length, 1, "Agent dock must remain visible");
+  assert.equal(lines.filter((line) => line === todoDock).length, 1, "Todo dock must remain visible");
+  assert.ok(
+    lines.indexOf(workingMessage ?? "") > lines.indexOf(pendingText),
+    "HUD must be below pending output text",
+  );
+  assert.ok(
+    lines.indexOf(workingMessage ?? "") < lines.indexOf(agentDock),
+    "HUD must precede the navigation docks rather than sit at the bottom",
+  );
+  assert.ok(lines.indexOf(workingMessage ?? "") < lines.indexOf("Input >"));
 
   emit("agent_end");
   emit("agent_settled");
-  assert.match(widget?.[0] ?? "", /done/);
+  assert.match(workingMessage ?? "", /done/);
 
-  let cleanupErrors = 0;
-  const cleanupConsoleError = console.error;
-  console.error = (...args: unknown[]) => {
-    if (String(args[0]).includes("[pi-cyber-working]")) {
-      cleanupErrors += 1;
-      return;
-    }
-    cleanupConsoleError(...args);
-  };
-  widgetFailures = 1;
-  try {
-    emit("session_shutdown");
-    assert.equal(workingMessageCalls, 0, "teardown must not overwrite another owner's working message");
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  } finally {
-    console.error = cleanupConsoleError;
-  }
-  assert.equal(cleanupErrors, 1, "a teardown failure must remain diagnosable");
-  assert.equal(widget, undefined);
-  assert.equal(hostWidgets.size, 0, "teardown must remove the HUD without touching the other docks");
+  workingMessage = "another owner's native status";
+  const updatesBeforeShutdown = workingMessageUpdates;
+  emit("session_shutdown");
+  assert.equal(workingMessage, "another owner's native status", "teardown must not overwrite another owner's message");
+  assert.equal(workingMessageUpdates, updatesBeforeShutdown);
   assert.deepEqual(visibility.at(-1), true);
+
+  emit("session_start", { reason: "reload" });
+  emit("agent_start");
+  const reloadLines = renderOrder();
+  assert.equal(reloadLines.filter((line) => line === workingMessage).length, 1);
+  assert.equal(reloadLines.filter((line) => line === agentDock).length, 1);
+  assert.equal(reloadLines.filter((line) => line === todoDock).length, 1);
+  emit("session_shutdown");
 });
 
 test("stops cleanup retries for an invalidated host context", { concurrency: false }, async () => {
   const handlers = new Map<string, Handler[]>();
-  let widget: string[] | undefined;
+  let workingMessage: string | undefined;
   const ui = {
-    setWidget: (_key: string, content: unknown): void => {
-      widget = content === undefined ? undefined : [...(content as string[])];
+    setWorkingMessage: (message?: string) => {
+      workingMessage = message;
     },
-    setWorkingMessage: () => {},
     setWorkingVisible: (_visible: boolean) => {},
     setWorkingIndicator: (_indicator?: unknown) => {},
   };
@@ -166,7 +147,7 @@ test("stops cleanup retries for an invalidated host context", { concurrency: fal
 
   emit("session_start");
   emit("agent_start");
-  assert.ok(widget);
+  assert.ok(workingMessage);
 
   let modeReads = 0;
   const invalidatedContext = {
@@ -193,22 +174,20 @@ test("stops cleanup retries for an invalidated host context", { concurrency: fal
     console.error = originalConsoleError;
   }
 
-  assert.equal(modeReads, 1, "teardown should not inspect the invalid event context while restoring the owned surface");
-  assert.equal(reportedErrors, 1, "an invalid context should remain diagnosable");
+  assert.equal(modeReads, 0, "teardown should restore through the owned lease context");
+  assert.equal(reportedErrors, 0, "an invalid event context must not affect lease cleanup");
 });
 
-test("restores only native visibility without clobbering the surface state", { concurrency: false }, () => {
+test("releases only the native lease without clobbering surface state", { concurrency: false }, () => {
   const handlers = new Map<string, Handler[]>();
   let visible = true;
-  let widget: string[] | undefined;
-  let workingMessageCalls = 0;
+  let workingMessage: string | undefined;
+  let workingMessageUpdates = 0;
   let indicatorCalls = 0;
   const ui = {
-    setWidget: (_key: string, content: unknown): void => {
-      widget = content === undefined ? undefined : [...(content as string[])];
-    },
-    setWorkingMessage: () => {
-      workingMessageCalls += 1;
+    setWorkingMessage: (message?: string) => {
+      workingMessage = message;
+      workingMessageUpdates += 1;
     },
     setWorkingVisible: (nextVisible: boolean) => {
       visible = nextVisible;
@@ -230,25 +209,13 @@ test("restores only native visibility without clobbering the surface state", { c
     for (const handler of handlers.get(event) ?? []) handler(payload, context);
   };
 
-  let reportedErrors = 0;
-  const originalConsoleError = console.error;
-  console.error = (...args: unknown[]) => {
-    if (String(args[0]).includes("[pi-cyber-working]")) {
-      reportedErrors += 1;
-      return;
-    }
-    originalConsoleError(...args);
-  };
-  try {
-    emit("session_start");
-    emit("session_shutdown");
-  } finally {
-    console.error = originalConsoleError;
-  }
+  emit("session_start");
+  workingMessage = "another owner's native status";
+  const updatesBeforeShutdown = workingMessageUpdates;
+  emit("session_shutdown");
 
-  assert.equal(reportedErrors, 0, "a successful lease must not report a UI failure");
   assert.equal(visible, true, "teardown must restore visibility after releasing the lease");
-  assert.equal(workingMessageCalls, 0, "releasing the lease must not overwrite the native working message");
+  assert.equal(workingMessage, "another owner's native status");
+  assert.equal(workingMessageUpdates, updatesBeforeShutdown, "releasing the lease must not overwrite the message");
   assert.equal(indicatorCalls, 0, "releasing the lease must not overwrite the native indicator");
-  assert.equal(widget, undefined);
 });

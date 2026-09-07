@@ -4,16 +4,13 @@ import test from "node:test";
 
 const source = await readFile(new URL("../working.ts", import.meta.url), "utf8");
 
-test("working HUD uses one stable host widget and keeps the full surface", () => {
+test("working HUD uses the native status slot and keeps the full surface", () => {
   assert.match(source, /const MESSAGE_REFRESH_MS = 33;/);
-  assert.match(source, /const WORKING_WIDGET_KEY = "cyber-working-hud";/);
-  assert.match(source, /setWidget\(/);
-  assert.match(source, /\{ placement: "aboveEditor" \}/);
-  assert.match(source, /uiCtx\.ui\.setWidget\(/);
-  assert.match(source, /setWorkingVisible\(false\)/);
-  assert.match(source, /setWorkingIndicator\(\{ frames: \[\] \}\)/);
-  assert.doesNotMatch(source, /setWorkingIndicator\(\{[\s\S]*intervalMs/);
-  assert.doesNotMatch(source, /\bsetInterval\b|\bclearInterval\b/);
+  assert.doesNotMatch(source, /WORKING_WIDGET_KEY|setWidget\(/);
+  assert.match(source, /setWorkingMessage\(message\)/);
+  assert.match(source, /setWorkingVisible\(true\)/);
+  assert.match(source, /setWorkingIndicator\(\{[\s\S]*frames: \[""\]/);
+  assert.match(source, /intervalMs: PULSE_FRAME_INTERVAL_MS/);
   assert.match(source, /const next = setTimeout\(\(\) => \{/);
   assert.match(source, /const elapsedMs = now - prompt\.startedAt;/);
   assert.match(source, /collectRunningSegments\(/);
@@ -25,10 +22,10 @@ test("working HUD uses one stable host widget and keeps the full surface", () =>
   const updateStart = source.indexOf("function updateWorkingMessage");
   const publishStart = source.indexOf("function publishWorkingMessage");
   const cacheCheck = source.indexOf("message === lastMessage", publishStart);
-  const widgetPublish = source.indexOf('const published = runTuiUi(ctx, "publish working HUD"', publishStart);
+  const nativePublish = source.indexOf('const published = runTuiUi(ctx, "publish native working message"', publishStart);
   assert.ok(updateStart >= 0, "working message updater should exist");
-  assert.ok(publishStart >= 0, "working widget publisher should exist");
-  assert.ok(cacheCheck >= 0 && cacheCheck < widgetPublish, "duplicate frames must be filtered before widget updates");
+  assert.ok(publishStart >= 0, "native working message publisher should exist");
+  assert.ok(cacheCheck >= 0 && cacheCheck < nativePublish, "duplicate frames must be filtered before host updates");
 });
 
 test("agent_end pauses and agent_settled finalizes the prompt", () => {

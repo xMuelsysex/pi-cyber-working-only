@@ -21,7 +21,16 @@ type TerminalOutput = {
   setProgress(active: boolean): void;
 };
 
-test("regular TUI keeps the working widget and navigation docks on one surface", () => {
+function assertOrder(output: string, labels: string[]): void {
+  let previous = -1;
+  for (const label of labels) {
+    const position = output.indexOf(label);
+    assert.ok(position > previous, `${label} should follow the preceding surface`);
+    previous = position;
+  }
+}
+
+test("regular TUI places native working status below pending text and before navigation docks", () => {
   const terminal: TerminalOutput = {
     columns: 48,
     rows: 8,
@@ -42,7 +51,15 @@ test("regular TUI keeps the working widget and navigation docks on one surface",
     setTitle() {},
     setProgress() {},
   };
-  const hud = {
+  const transcript = {
+    render: () => ["Assistant output"],
+    invalidate() {},
+  };
+  const pending = {
+    render: () => ["Queued | next response"],
+    invalidate() {},
+  };
+  const working = {
     lines: ["HUD | 0s | ↑ 0 ↓ 0 | t/s 0"],
     render() {
       return this.lines;
@@ -57,19 +74,34 @@ test("regular TUI keeps the working widget and navigation docks on one surface",
     render: () => ["Todo | 1 running"],
     invalidate() {},
   };
+  const editor = {
+    render: () => ["Input >"],
+    invalidate() {},
+  };
   const tui = new TuiMainScreen(terminal, false, process.cwd());
-  tui.addChild(hud);
+  tui.addChild(transcript);
+  tui.addChild(pending);
+  tui.addChild(working);
   tui.addChild(agentDock);
   tui.addChild(todoDock);
+  tui.addChild(editor);
 
   tui.renderNow();
   const firstRender = terminal.writes.join("");
+  assertOrder(firstRender, [
+    "Assistant output",
+    "Queued | next response",
+    "HUD | 0s | ↑ 0 ↓ 0 | t/s 0",
+    "Agent | working",
+    "Todo | 1 running",
+    "Input >",
+  ]);
   assert.equal(firstRender.match(/HUD \| 0s/g)?.length, 1);
   assert.equal(firstRender.match(/Agent \| working/g)?.length, 1);
   assert.equal(firstRender.match(/Todo \| 1 running/g)?.length, 1);
 
   terminal.writes.length = 0;
-  hud.lines = ["HUD | 1s | ↑ 12 ↓ 7 | t/s 19"];
+  working.lines = ["HUD | 1s | ↑ 12 ↓ 7 | t/s 19"];
   tui.renderNow();
   const update = terminal.writes.join("");
   assert.match(update, /HUD \| 1s \| ↑ 12 ↓ 7 \| t\/s 19/);
