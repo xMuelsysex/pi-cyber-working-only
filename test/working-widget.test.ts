@@ -45,6 +45,9 @@ test("places the complete HUD in the native status slot", { concurrency: false }
       editorComponentFactories += 1;
       editorComponentFactory = factory;
     },
+    getEditorComponent(): ((...args: never[]) => unknown) | undefined {
+      return editorComponentFactory;
+    },
   };
 
   const context = {
@@ -78,7 +81,16 @@ test("places the complete HUD in the native status slot", { concurrency: false }
   assert.deepEqual(visibility.at(-1), true);
   assert.equal(indicators.length, 0, "the indicator is configured only for an active prompt");
 
+  ui.setEditorComponent(() => ({ embedWorkingStatus: true }));
   emit("agent_start");
+  assert.equal(editorComponentFactories, 3, "a later embedded editor must be wrapped before the HUD starts");
+  assert.ok(editorComponentFactory);
+  const guardedEditor = editorComponentFactory(
+    {} as never,
+    { borderColor: (text: string) => text } as never,
+    {} as never,
+  ) as { embedWorkingStatus?: boolean };
+  assert.notEqual(guardedEditor.embedWorkingStatus, true, "working status must stay out of a later editor override");
   assert.match(workingMessage ?? "", /0s|↑|↓|t\/s/, "the native slot keeps the complete HUD");
   assert.deepEqual(indicators.at(-1), { frames: [""], intervalMs: 75 });
   const firstUpdateCount = workingMessageUpdates;

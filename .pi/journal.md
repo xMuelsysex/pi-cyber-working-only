@@ -1,5 +1,11 @@
 # 项目记忆
 
+- 2026-09-08：确认宿主实际加载的是 `~/.pi/agent/git/github.com/xMuelsysex/pi-cyber-working-only`，而非工作区源码；该 checkout 曾停留在旧的单次 `CustomEditor` 修复，导致运行中的工作栏保持嵌入输入框。已同步 ownership 修复到实际 checkout，并直接对该路径回归 6/6 通过；现有 Pi 进程仍需 `/reload` 或重启后读取新模块。
+
+- 2026-09-08：修复工作栏被后续 editor 注册重新嵌入输入框的问题：Cyber 在显示 HUD 前读取当前 `getEditorComponent()`，包裹被 `pi-open-tui` 替换的 factory，将生成 editor 的 `embedWorkingStatus` 关闭，再在 `setWorkingVisible(true)` 前完成重注册；保留 OpenTUI 编辑器样式与输入行为，工作栏回到对话下方第一个 native working status slot。竞争 factory 回归与布局测试 6/6 通过，宿主 `0.84.4` 类型映射检查通过。
+
+- 2026-09-07：插件兼容性审计确认宿主同时加载 `pi-open-tui`、`pi-cockpit 0.23.0` 与 Cyber。`pi-open-tui` 的 `OpenTuiEditor` 固定 `embedWorkingStatus = true` 并注册 `setEditorComponent`；Cockpit 0.23.0 的 ambient refresh 仍直接写 `setWorkingMessage`，旧 `cockpit.json` 的 `ambientWorkingMessage=false` 已不再被读取。两者分别竞争 editor 布局与 native working surface，足以使 Cyber 修复复发；其他已加载插件只注册邻近 widgets，未发现直接写 working message/indicator 的实现。本次仅完成只读审计，未修改宿主配置。
+
 - 2026-09-07：修复宿主 `0.85.1` 的工作栏再次错位：默认 `CustomEditor` 会把 `WorkingStatusIndicator` 嵌入编辑器顶边，导致实际行序为 `Todo/Agent → 工作栏`。Cyber 在 session 初始化时通过公开 `ctx.ui.setEditorComponent` 创建默认非嵌入的 `CustomEditor`，使 native working status 回到 `statusContainer`，位于待处理文本之后、Agent/Todo dock 之前；完整 HUD 与 dock 保留。目标回归 6/6、类型检查和 `git diff --check` 通过。
 
 - 2026-09-06：修正工作栏布局：`aboveEditor` 会把 HUD 固定在输入栏上方，已改用宿主 native working status slot；宿主 `TuiMainScreen` 的顺序为 pending text → working status → Agent/Todo dock → editor，完整 HUD 保留且不占输入栏 widget 槽位。布局 1/1、架构 2/2、生命周期 3/3 逐文件通过，覆盖 resize 与 session shutdown → reload → agent_start；`npm run typecheck` 和 `git diff --check` 通过。
